@@ -57,6 +57,7 @@ async def test_insufficient_scope_explains_fix(mock, xero):
 
 async def test_create_draft_bill(mock, xero):
     mock.get("/Contacts").respond(json={"Contacts": [{"ContactID": "C1"}]})
+    mock.get("/Invoices").respond(json={"Invoices": []})
     route = mock.post("/Invoices").respond(json={"Invoices": [bill()]})
     await acc.create_draft_bill(
         xero, contact_name="Supplier Pty Ltd", invoice_number="INV-1", date_="2026-10-12",
@@ -68,6 +69,28 @@ async def test_create_draft_bill(mock, xero):
     assert sent["Contact"] == {"ContactID": "C1"} and sent["InvoiceNumber"] == "INV-1"
     assert sent["LineItems"][0] == {"Description": "Pens", "Quantity": 1, "UnitAmount": 72, "AccountCode": "453",
                                     "TaxType": "INPUT", "Tracking": [{"Name": "Region", "Option": "North"}]}
+
+
+async def test_duplicate_bill_is_refused(mock, xero):
+    mock.get("/Contacts").respond(json={"Contacts": [{"ContactID": "C1"}]})
+    lookup = mock.get("/Invoices").respond(json={"Invoices": [bill()]})
+    create = mock.post("/Invoices").respond(json={"Invoices": [bill()]})
+    with pytest.raises(ValueError, match="already exists"):
+        await acc.create_draft_bill(xero, contact_name="Supplier Pty Ltd", invoice_number="INV-1",
+                                    lines=[{"description": "x"}])
+    assert 'InvoiceNumber=="INV-1"' in lookup.calls[0].request.url.params["where"] and not create.called
+    await acc.create_draft_bill(xero, contact_name="Supplier Pty Ltd", invoice_number="INV-1",
+                                lines=[{"description": "x"}], allow_duplicate=True)
+    assert create.called
+
+
+async def test_voided_bill_is_not_a_duplicate(mock, xero):
+    mock.get("/Contacts").respond(json={"Contacts": [{"ContactID": "C1"}]})
+    mock.get("/Invoices").respond(json={"Invoices": [bill(status="VOIDED")]})
+    create = mock.post("/Invoices").respond(json={"Invoices": [bill()]})
+    await acc.create_draft_bill(xero, contact_name="Supplier Pty Ltd", invoice_number="INV-1",
+                                lines=[{"description": "x"}])
+    assert create.called
 
 
 async def test_unknown_contact_name_is_refused(mock, xero):

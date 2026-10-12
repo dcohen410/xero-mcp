@@ -190,12 +190,16 @@ async def create_draft_bill(
     invoice_number: str | None = None,
     reference: str | None = None,
     amounts_are: str = "Inclusive",
+    allow_duplicate: bool = False,
 ) -> dict:
-    """Create a DRAFT bill. `invoice_number` is the supplier's invoice number. Give each line an
-    account_code and tax_type from list_accounts / list_tax_rates. Nothing is approved."""
+    """Create a DRAFT bill. `invoice_number` is the supplier's invoice number; a bill with the same
+    supplier and invoice number is refused unless allow_duplicate=true (only if the user says it's
+    genuinely separate). Give each line an account_code and tax_type from list_accounts /
+    list_tax_rates. Nothing is approved."""
     return await guard(acc.create_draft_bill(
         xero(), lines=_dump(lines), contact_id=contact_id, contact_name=contact_name, date_=date,
         due_date=due_date, invoice_number=invoice_number, reference=reference, amounts_are=amounts_are,
+        allow_duplicate=allow_duplicate,
     ))
 
 

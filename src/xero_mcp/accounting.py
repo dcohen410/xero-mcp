@@ -334,19 +334,37 @@ def _line_payload(line: dict) -> dict:
     return out
 
 
+async def _refuse_duplicate_bill(x: Xero, contact_id: str, invoice_number: str) -> None:
+    """Xero happily accepts the same supplier invoice twice, so check first."""
+    where = (f'Type=="ACCPAY" && Contact.ContactID==guid("{_q(contact_id)}") '
+             f'&& InvoiceNumber=="{_q(invoice_number)}"')
+    data = await x.get("/Invoices", params={"where": where, "summaryOnly": "true"})
+    live = [i for i in data.get("Invoices", []) if i.get("Status") not in ("DELETED", "VOIDED")]
+    if live:
+        b = live[0]
+        raise ValueError(
+            f"A bill from this supplier with invoice number '{invoice_number}' already exists "
+            f"({b.get('Status')}, {b.get('InvoiceID')}). Not creating a duplicate. If it really is a separate "
+            "bill, call again with allow_duplicate=true."
+        )
+
+
 async def create_draft_bill(
     x: Xero, *, lines: list[dict], contact_id: str | None = None, contact_name: str | None = None,
     date_: str | None = None, due_date: str | None = None, invoice_number: str | None = None,
-    reference: str | None = None, amounts_are: str = "Inclusive",
+    reference: str | None = None, amounts_are: str = "Inclusive", allow_duplicate: bool = False,
 ) -> dict:
     if amounts_are not in ("Inclusive", "Exclusive", "NoTax"):
         raise ValueError("amounts_are must be Inclusive, Exclusive or NoTax.")
     if not lines:
         raise ValueError("A bill needs at least one line.")
+    contact = await _contact_ref(x, contact_id, contact_name)
+    if invoice_number and not allow_duplicate:
+        await _refuse_duplicate_bill(x, contact["ContactID"], invoice_number)
     bill: dict = {
         "Type": "ACCPAY",
         "Status": "DRAFT",
-        "Contact": await _contact_ref(x, contact_id, contact_name),
+        "Contact": contact,
         "LineAmountTypes": amounts_are,
         "LineItems": [_line_payload(li) for li in lines],
     }
