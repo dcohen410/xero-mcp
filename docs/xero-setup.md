@@ -9,9 +9,9 @@ It takes about two minutes.
 1. Sign in at [developer.xero.com/app/manage](https://developer.xero.com/app/manage) with your Xero login.
 2. Click **New app**.
 3. Fill in:
-   - **App name:** anything, e.g. `xero-mcp (your name)`
+   - **App name:** anything that doesn't contain the word "Xero" (Xero rejects those), e.g. `Claude Accounts (your name)`
    - **Integration type:** **Mobile or desktop app**
-   - **Company or application URL:** any URL you own, or `https://github.com/dcohen410/xero-mcp`
+   - **Company or application URL:** your business website (any URL you own)
    - **Redirect URI:** `http://localhost:8765/callback` (exactly this)
 4. Tick the terms and click **Create app**.
 
