@@ -46,3 +46,11 @@ def write_file(folder: str, filename: str, data: bytes, roots: list[Path], overw
             n += 1
     target.write_bytes(data)
     return target
+
+
+def delete_file(path: str, roots: list[Path]) -> None:
+    """Delete one file inside the allowed folders. Folders are never deleted."""
+    p = _check(Path(path), roots)
+    if not p.is_file():
+        raise LocalPathError(f"No such file: {p}")
+    p.unlink()

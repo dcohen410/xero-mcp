@@ -214,9 +214,13 @@ async def update_bill_lines(
 
 
 @server.tool(annotations=WRITE)
-async def attach_file(invoice_id: str, local_path: str, file_name: str | None = None) -> dict:
-    """Attach a file from this computer (inside an allowed folder) to a bill or invoice."""
-    return await guard(acc.attach_file(xero(), cfg, invoice_id, local_path, file_name))
+async def attach_file(
+    invoice_id: str, local_path: str, file_name: str | None = None, delete_after: bool = False,
+) -> dict:
+    """Attach a file from this computer (inside an allowed folder) to a bill or invoice. Set
+    `delete_after` to remove the local file once Xero confirms the attachment (use it for files
+    downloaded only so they could be attached)."""
+    return await guard(acc.attach_file(xero(), cfg, invoice_id, local_path, file_name, delete_after))
 
 
 @server.tool(annotations=WRITE)

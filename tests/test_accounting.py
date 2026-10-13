@@ -145,6 +145,33 @@ async def test_attach_file(mock, xero, cfg, tmp_path):
     assert out["attachment_id"] == "A1"
 
 
+async def test_attach_file_delete_after(mock, xero, cfg, tmp_path):
+    pdf = tmp_path / "Invoice 2.pdf"
+    pdf.write_bytes(b"%PDF")
+    mock.put(f"/Invoices/{BILL_ID}/Attachments/Invoice%202.pdf").respond(
+        json={"Attachments": [{"FileName": "Invoice 2.pdf", "AttachmentID": "A2"}]})
+    out = await acc.attach_file(xero, cfg, BILL_ID, str(pdf), delete_after=True)
+    assert out["local_file_deleted"] is True and not pdf.exists()
+
+
+async def test_attach_file_keeps_file_without_confirmation(mock, xero, cfg, tmp_path):
+    pdf = tmp_path / "Invoice 3.pdf"
+    pdf.write_bytes(b"%PDF")
+    mock.put(f"/Invoices/{BILL_ID}/Attachments/Invoice%203.pdf").respond(json={"Attachments": []})
+    with pytest.raises(ValueError, match="local file was kept"):
+        await acc.attach_file(xero, cfg, BILL_ID, str(pdf), delete_after=True)
+    assert pdf.exists()
+
+
+async def test_attach_file_keeps_file_by_default(mock, xero, cfg, tmp_path):
+    pdf = tmp_path / "Invoice 4.pdf"
+    pdf.write_bytes(b"%PDF")
+    mock.put(f"/Invoices/{BILL_ID}/Attachments/Invoice%204.pdf").respond(
+        json={"Attachments": [{"FileName": "Invoice 4.pdf", "AttachmentID": "A4"}]})
+    await acc.attach_file(xero, cfg, BILL_ID, str(pdf))
+    assert pdf.exists()
+
+
 async def test_attach_file_outside_allowed_folders(xero, cfg):
     with pytest.raises(Exception, match="outside the folders"):
         await acc.attach_file(xero, cfg, BILL_ID, "/etc/hosts")
