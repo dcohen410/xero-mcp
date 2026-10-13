@@ -254,7 +254,10 @@ async def download_attachment(x: Xero, cfg: Config, invoice_id: str, attachment_
     return str(localfs.write_file(local_folder, match["file_name"], data, cfg.local_roots()))
 
 
-async def attach_file(x: Xero, cfg: Config, invoice_id: str, local_path: str, file_name: str | None = None) -> dict:
+async def attach_file(
+    x: Xero, cfg: Config, invoice_id: str, local_path: str, file_name: str | None = None,
+    delete_after: bool = False,
+) -> dict:
     name, data = localfs.read_file(local_path, cfg.local_roots())
     name = localfs.safe_filename(file_name or name)
     mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
@@ -263,7 +266,14 @@ async def attach_file(x: Xero, cfg: Config, invoice_id: str, local_path: str, fi
     resp = await x.request("PUT", f"/Invoices/{invoice_id}/Attachments/{quote(name)}", content=data,
                            headers={"Content-Type": mime})
     att = (resp.json().get("Attachments") or [{}])[0]
-    return {"attached": att.get("FileName", name), "attachment_id": att.get("AttachmentID"), "size": len(data)}
+    out = {"attached": att.get("FileName", name), "attachment_id": att.get("AttachmentID"), "size": len(data)}
+    if delete_after:
+        # Only remove the local copy once Xero has confirmed it holds the file.
+        if not att.get("AttachmentID"):
+            raise ValueError("Xero didn't confirm the attachment, so the local file was kept.")
+        localfs.delete_file(local_path, cfg.local_roots())
+        out["local_file_deleted"] = True
+    return out
 
 
 # ---------------------------------------------------------------- contacts

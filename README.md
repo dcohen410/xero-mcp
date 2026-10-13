@@ -91,7 +91,7 @@ Settings can also come from environment variables prefixed `XERO_MCP_` (for exam
 | `list_attachments` / `download_attachment` | Attachments on an invoice or bill |
 | `create_draft_bill` | New draft bill with coded line items |
 | `update_bill_lines` | Recode or replace lines on a draft bill |
-| `attach_file` | Attach a local file (e.g. the supplier PDF) to a bill |
+| `attach_file` | Attach a local file (e.g. the supplier PDF) to a bill; `delete_after=true` removes the local copy once Xero confirms it |
 | `create_contact` / `update_contact` | Add or edit a contact |
 | `approve_bills` | Only when approve mode is `confirm`; always asks you first |
 
