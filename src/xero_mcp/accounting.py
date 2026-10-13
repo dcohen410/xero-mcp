@@ -96,7 +96,7 @@ async def search_contacts(x: Xero, query: str, limit: int = 25) -> list[dict]:
 
 
 async def list_invoices(
-    x: Xero, kind: str, statuses: list[str] | None = None, contact_id: str | None = None,
+    x: Xero, kind: str, statuses: list[str] | str | None = None, contact_id: str | None = None,
     since: str | None = None, limit: int = 50,
 ) -> list[dict]:
     where = ['Type=="ACCPAY"' if kind == "bill" else 'Type=="ACCREC"']
@@ -104,7 +104,9 @@ async def list_invoices(
         where.append(_where_date("Date", since))
     params = {"where": " && ".join(where), "order": "Date DESC", "page": "1", "summaryOnly": "true"}
     if statuses:
-        params["Statuses"] = ",".join(s.upper() for s in statuses)
+        if isinstance(statuses, str):
+            statuses = statuses.split(",")
+        params["Statuses"] = ",".join(s.strip().upper() for s in statuses if s.strip())
     if contact_id:
         params["ContactIDs"] = contact_id
     items: list[dict] = []

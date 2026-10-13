@@ -65,19 +65,19 @@ async def search_contacts(query: str, limit: int = 25) -> list[dict]:
 
 @server.tool(annotations=READ)
 async def list_bills(
-    statuses: list[str] | None = None, contact_id: str | None = None, since: str | None = None, limit: int = 50,
+    statuses: list[str] | str | None = None, contact_id: str | None = None, since: str | None = None, limit: int = 50,
 ) -> list[dict]:
     """List bills (supplier invoices), newest first. statuses: DRAFT, SUBMITTED, AUTHORISED (awaiting
-    payment), PAID, VOIDED. `since` is YYYY-MM-DD."""
+    payment), PAID, VOIDED (a list, or one or more comma-separated). `since` is YYYY-MM-DD."""
     return await guard(acc.list_invoices(xero(), "bill", statuses, contact_id, since, limit))
 
 
 @server.tool(annotations=READ)
 async def list_invoices(
-    statuses: list[str] | None = None, contact_id: str | None = None, since: str | None = None, limit: int = 50,
+    statuses: list[str] | str | None = None, contact_id: str | None = None, since: str | None = None, limit: int = 50,
 ) -> list[dict]:
     """List sales invoices, newest first. statuses: DRAFT, SUBMITTED, AUTHORISED (awaiting payment),
-    PAID, VOIDED. `since` is YYYY-MM-DD."""
+    PAID, VOIDED (a list, or one or more comma-separated). `since` is YYYY-MM-DD."""
     return await guard(acc.list_invoices(xero(), "invoice", statuses, contact_id, since, limit))
 
 

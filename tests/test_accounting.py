@@ -30,6 +30,12 @@ async def test_list_bills_filters_type_and_status(mock, xero):
     assert out[0]["type"] == "bill" and out[0]["date"] == "2025-10-12"
 
 
+async def test_statuses_can_be_a_string(mock, xero):
+    route = mock.get("/Invoices").respond(json={"Invoices": []})
+    await acc.list_invoices(xero, "bill", statuses="draft, submitted")
+    assert route.calls[0].request.url.params["Statuses"] == "DRAFT,SUBMITTED"
+
+
 async def test_outstanding_sorts_by_days_overdue(mock, xero):
     old = (date.today() - timedelta(days=90)).isoformat()
     recent = (date.today() - timedelta(days=5)).isoformat()
