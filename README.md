@@ -16,6 +16,7 @@ and no third-party service in the middle. Your sign-in is kept in your operating
 - **Draft bills:** create a draft bill with itemised, coded line items; recode or replace lines on a
   draft; attach the supplier's PDF.
 - **Contacts:** create a contact (refuses duplicates) and update email, phone, account number or ABN.
+  View a contact's bank details (read only), e.g. to check them against your own records.
 - **Files:** download attachments to, and upload from, folders on your computer that you allow
   (default `~/Downloads`).
 
@@ -82,6 +83,7 @@ Settings can also come from environment variables prefixed `XERO_MCP_` (for exam
 |---|---|
 | `organisation_info` | Name, country, currency, financial year |
 | `search_contacts` | Find contacts by name |
+| `get_contact_bank_details` | A contact's BSB, account number, account name and batch payment details (read only) |
 | `list_bills` / `list_invoices` | Bills (ACCPAY) or sales invoices, filtered by status, contact and date |
 | `outstanding` | Unpaid invoices or bills with days overdue |
 | `get_invoice` | One invoice or bill with its line items, by ID or number |

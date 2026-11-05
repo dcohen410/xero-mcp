@@ -215,3 +215,33 @@ async def test_long_rate_limit_is_reported_not_waited(mock, xero):
     mock.get("/TaxRates").respond(429, headers={"Retry-After": "3600"})
     with pytest.raises(XeroError, match="rate limiting"):
         await acc.list_tax_rates(xero)
+
+
+CONTACT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+async def test_contact_bank_details_by_id(mock, xero):
+    route = mock.get(f"/Contacts/{CONTACT_ID}").respond(json={"Contacts": [{
+        "ContactID": CONTACT_ID, "Name": "Sam Lee", "ContactStatus": "ACTIVE", "IsSupplier": True,
+        "BankAccountDetails": "082-902 748973363",
+        "BatchPayments": {"BankAccountName": "S Lee", "BankAccountNumber": "082902748973363", "Reference": "FTH"},
+    }]})
+    out = await acc.contact_bank_details(xero, contact_id=CONTACT_ID)
+    assert route.called
+    assert out["bsb"] == "082902" and out["account_number"] == "748973363"
+    assert out["bank_account_details"] == "082-902 748973363"
+    assert out["batch_payments"]["bank_account_name"] == "S Lee"
+    assert out["batch_payments"]["reference"] == "FTH" and out["batch_payments"]["details"] is None
+
+
+async def test_contact_bank_details_by_name_and_none_on_file(mock, xero):
+    lookup = mock.get("/Contacts").respond(json={"Contacts": [{"ContactID": CONTACT_ID}]})
+    mock.get(f"/Contacts/{CONTACT_ID}").respond(json={"Contacts": [{"ContactID": CONTACT_ID, "Name": "Sam Lee"}]})
+    out = await acc.contact_bank_details(xero, contact_name="Sam Lee")
+    assert lookup.calls[0].request.url.params["where"] == 'Name=="Sam Lee"'
+    assert out["bsb"] is None and out["account_number"] is None and out["bank_account_details"] is None
+
+
+async def test_contact_bank_details_rejects_non_guid(mock, xero):
+    with pytest.raises(ValueError, match="isn't a Xero contact_id"):
+        await acc.contact_bank_details(xero, contact_id="../Invoices")

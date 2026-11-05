@@ -290,6 +290,39 @@ async def _contact_ref(x: Xero, contact_id: str | None, contact_name: str | None
     return {"ContactID": found[0]["ContactID"]}
 
 
+async def contact_bank_details(x: Xero, contact_id: str | None = None, contact_name: str | None = None) -> dict:
+    """A contact's bank details as Xero holds them. Read only: nothing here changes them."""
+    ref = await _contact_ref(x, contact_id, contact_name)
+    cid = ref["ContactID"]
+    if not _GUID.match(cid):
+        raise ValueError(f"'{cid}' isn't a Xero contact_id. Use search_contacts to find it.")
+    found = (await x.get(f"/Contacts/{quote(cid)}")).get("Contacts", [])
+    if not found:
+        raise ValueError(f"No Xero contact has the id {cid}.")
+    c = found[0]
+    batch = c.get("BatchPayments") or {}
+    raw = c.get("BankAccountDetails") or batch.get("BankAccountNumber") or ""
+    digits = re.sub(r"\D", "", raw)
+    # Australian accounts are stored as the 6-digit BSB and account number run together.
+    bsb, account = (digits[:6], digits[6:]) if len(digits) > 6 else (None, digits or None)
+    return {
+        "contact_id": c.get("ContactID"),
+        "name": c.get("Name"),
+        "status": c.get("ContactStatus"),
+        "is_supplier": c.get("IsSupplier"),
+        "bank_account_details": c.get("BankAccountDetails") or None,
+        "bsb": bsb,
+        "account_number": account,
+        "batch_payments": {
+            "bank_account_name": batch.get("BankAccountName") or None,
+            "bank_account_number": batch.get("BankAccountNumber") or None,
+            "details": batch.get("Details") or None,
+            "code": batch.get("Code") or None,
+            "reference": batch.get("Reference") or None,
+        },
+    }
+
+
 async def create_contact(
     x: Xero, name: str, email: str | None = None, phone: str | None = None, account_number: str | None = None,
     tax_number: str | None = None,

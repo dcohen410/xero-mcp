@@ -64,6 +64,14 @@ async def search_contacts(query: str, limit: int = 25) -> list[dict]:
 
 
 @server.tool(annotations=READ)
+async def get_contact_bank_details(contact_id: str | None = None, contact_name: str | None = None) -> dict:
+    """A contact's bank details in Xero: BSB, account number, account name and batch payment
+    reference, e.g. to compare with a staff member's or supplier's records. Give contact_id (from
+    search_contacts) or the exact contact_name. Read only: bank details can't be changed here."""
+    return await guard(acc.contact_bank_details(xero(), contact_id, contact_name))
+
+
+@server.tool(annotations=READ)
 async def list_bills(
     statuses: list[str] | str | None = None, contact_id: str | None = None, since: str | None = None, limit: int = 50,
 ) -> list[dict]:
