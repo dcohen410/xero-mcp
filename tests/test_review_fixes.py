@@ -78,7 +78,8 @@ async def test_approving_by_invoice_number_approves_the_checked_bill(mock, monke
 
     class Ctx:
         client_capabilities = None
-    out = await server.approve_bills(["INV-1"], Ctx(), user_confirmed=True)
+    code = (await server.approve_bills(["INV-1"], Ctx()))["confirmation_code"]
+    out = await server.approve_bills(["INV-1"], Ctx(), confirmation_code=code)
     assert out["results"][0]["approved"] is True
     assert json.loads(approve.calls[0].request.content)["Invoices"][0]["InvoiceID"] == BILL_ID
 

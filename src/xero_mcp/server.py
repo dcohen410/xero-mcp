@@ -13,6 +13,7 @@ from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from . import accounting as acc
+from . import confirm
 from . import config as config_mod
 from . import localfs
 from .api import Xero, XeroError
@@ -270,15 +271,24 @@ def _client_can_confirm(ctx: Context) -> bool:
     )
 
 
+confirmations = confirm.Confirmations()
+
+
+async def _redeem(action: str, code: str, fp: str) -> None:
+    confirmations.redeem(action, code, fp)
+
+
 class ApproveConfirmation(BaseModel):
     approve: bool = Field(description="Tick to approve these bills now.")
 
 
-async def approve_bills(invoice_ids: list[str], ctx: Context, user_confirmed: bool = False) -> dict:
+async def approve_bills(invoice_ids: list[str], ctx: Context, confirmation_code: str | None = None) -> dict:
     """Approve one or more DRAFT bills (status becomes AUTHORISED, awaiting payment). Only use when
     the user has asked for approval. The user always confirms first: either the app shows a
-    confirmation prompt, or this tool returns a summary that you must show the user, and you may only
-    call again with user_confirmed=true after they explicitly say yes. Every line must have an account code."""
+    confirmation prompt, or this tool returns a summary and a confirmation_code. Show the user the
+    summary; only if they explicitly say yes, call again with the same invoice_ids and that
+    confirmation_code. A code works once, for those bills exactly as summarised, for 15 minutes.
+    Every line must have an account code."""
     if cfg.approve_mode == "disabled":
         raise ToolError("Approving bills is turned off in this server's settings. Approve them in Xero.")
     bills = await guard(acc.bills_for_approval(xero(), invoice_ids))
@@ -296,14 +306,18 @@ async def approve_bills(invoice_ids: list[str], ctx: Context, user_confirmed: bo
     if answer is not None:
         if answer.action != "accept" or not answer.data.approve:
             return {"approved": False, "reason": "The user did not confirm. The bills are still drafts."}
-    elif not user_confirmed:
-        return {
-            "approved": False,
-            "needs_confirmation": True,
-            "summary": question,
-            "next_step": "Show this summary to the user and ask whether to approve. Only if they clearly say yes, "
-                         "call approve_bills again with the same invoice_ids and user_confirmed=true.",
-        }
+    else:
+        fp = confirm.fingerprint("approve", bills)
+        if not confirmation_code:
+            return {
+                "approved": False,
+                "needs_confirmation": True,
+                "summary": question,
+                "confirmation_code": confirmations.issue("approve", fp),
+                "next_step": "Show this summary to the user and ask whether to approve. Only if they clearly say "
+                             "yes, call approve_bills again with the same invoice_ids and this confirmation_code.",
+            }
+        await guard(_redeem("approve", confirmation_code, fp))
     # Approve exactly the bills that were checked and shown, by their own ids.
     return {"results": await guard(acc.approve_bills(xero(), [b["invoice_id"] for b in bills]))}
 
