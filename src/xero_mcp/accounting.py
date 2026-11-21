@@ -16,12 +16,36 @@ EDITABLE_STATUSES = {"DRAFT", "SUBMITTED"}
 
 
 def _where_date(field: str, iso: str) -> str:
-    y, m, d = (int(x) for x in iso[:10].split("-"))
-    return f"{field} >= DateTime({y}, {m}, {d})"
+    try:
+        d = date.fromisoformat(iso.strip()[:10])
+    except ValueError:
+        raise ValueError(f"Dates must look like 2026-10-16, not '{iso}'.") from None
+    return f"{field} >= DateTime({d.year}, {d.month}, {d.day})"
 
 
 def _q(value: str) -> str:
-    return value.replace('"', '\\"')
+    """Escape a value for a string inside a Xero `where` clause (backslashes first, then quotes)."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _guid(value: str, what: str) -> str:
+    v = (value or "").strip()
+    if not _GUID.match(v):
+        raise ValueError(f"'{value}' isn't a Xero {what}. Use the id a search or list tool returned.")
+    return v
+
+
+async def _paged(x: Xero, path: str, key: str, params: dict, limit: int) -> list[dict]:
+    """Up to `limit` rows from a Xero list endpoint that pages 100 at a time."""
+    items: list[dict] = []
+    page = 1
+    while len(items) < limit:
+        batch = (await x.get(path, params={**params, "page": str(page)})).get(key, [])
+        items.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return items[:limit]
 
 
 # ---------------------------------------------------------------- summaries
@@ -95,34 +119,36 @@ async def search_contacts(x: Xero, query: str, limit: int = 25) -> list[dict]:
     return [contact_summary(c) for c in data.get("Contacts", [])[:limit]]
 
 
+def _kind(kind: str) -> str:
+    k = (kind or "").strip().lower().rstrip("s")
+    if k not in ("bill", "invoice"):
+        raise ValueError("kind must be 'invoice' (sales invoices) or 'bill' (supplier bills).")
+    return k
+
+
 async def list_invoices(
     x: Xero, kind: str, statuses: list[str] | str | None = None, contact_id: str | None = None,
-    since: str | None = None, limit: int = 50,
+    since: str | None = None, limit: int = 50, order: str = "Date DESC",
 ) -> list[dict]:
-    where = ['Type=="ACCPAY"' if kind == "bill" else 'Type=="ACCREC"']
+    where = ['Type=="ACCPAY"' if _kind(kind) == "bill" else 'Type=="ACCREC"']
     if since:
         where.append(_where_date("Date", since))
-    params = {"where": " && ".join(where), "order": "Date DESC", "page": "1", "summaryOnly": "true"}
+    params = {"where": " && ".join(where), "order": order, "summaryOnly": "true"}
     if statuses:
         if isinstance(statuses, str):
             statuses = statuses.split(",")
         params["Statuses"] = ",".join(s.strip().upper() for s in statuses if s.strip())
     if contact_id:
-        params["ContactIDs"] = contact_id
-    items: list[dict] = []
-    page = 1
-    while len(items) < limit:
-        params["page"] = str(page)
-        batch = (await x.get("/Invoices", params=params)).get("Invoices", [])
-        items.extend(batch)
-        if len(batch) < 100:
-            break
-        page += 1
-    return [invoice_summary(i) for i in items[:limit]]
+        params["ContactIDs"] = _guid(contact_id, "contact_id")
+    return [invoice_summary(i) for i in await _paged(x, "/Invoices", "Invoices", params, limit)]
+
+
+# Fetched in full before filtering, so the most overdue items are never the ones cut off.
+OUTSTANDING_FETCH_LIMIT = 5000
 
 
 async def outstanding_invoices(x: Xero, kind: str = "invoice", min_days_overdue: int = 0, limit: int = 200) -> list[dict]:
-    rows = await list_invoices(x, kind, statuses=["AUTHORISED"], limit=limit)
+    rows = await list_invoices(x, kind, statuses=["AUTHORISED"], limit=OUTSTANDING_FETCH_LIMIT, order="DueDate ASC")
     today = date.today()
     out = []
     for r in rows:
@@ -131,7 +157,7 @@ async def outstanding_invoices(x: Xero, kind: str = "invoice", min_days_overdue:
         overdue = (today - date.fromisoformat(r["due_date"])).days if r.get("due_date") else 0
         if overdue >= min_days_overdue:
             out.append({**r, "days_overdue": max(overdue, 0)})
-    return sorted(out, key=lambda r: -r["days_overdue"])
+    return sorted(out, key=lambda r: -r["days_overdue"])[:limit]
 
 
 async def _fetch_invoice(x: Xero, id_or_number: str) -> dict:
@@ -179,7 +205,8 @@ async def list_tracking(x: Xero) -> list[dict]:
 
 
 async def list_bank_transactions(x: Xero, since: str, limit: int = 100) -> list[dict]:
-    data = await x.get("/BankTransactions", params={"where": _where_date("Date", since), "order": "Date DESC", "page": "1"})
+    rows = await _paged(x, "/BankTransactions", "BankTransactions",
+                        {"where": _where_date("Date", since), "order": "Date DESC"}, limit)
     return [{
         "bank_transaction_id": t.get("BankTransactionID"),
         "type": t.get("Type"),
@@ -190,11 +217,11 @@ async def list_bank_transactions(x: Xero, since: str, limit: int = 100) -> list[
         "bank_account": (t.get("BankAccount") or {}).get("Name"),
         "reconciled": t.get("IsReconciled"),
         "status": t.get("Status"),
-    } for t in data.get("BankTransactions", [])[:limit]]
+    } for t in rows]
 
 
 async def list_payments(x: Xero, since: str, limit: int = 100) -> list[dict]:
-    data = await x.get("/Payments", params={"where": _where_date("Date", since), "order": "Date DESC", "page": "1"})
+    rows = await _paged(x, "/Payments", "Payments", {"where": _where_date("Date", since), "order": "Date DESC"}, limit)
     return [{
         "payment_id": p.get("PaymentID"),
         "date": p.get("Date"),
@@ -204,7 +231,7 @@ async def list_payments(x: Xero, since: str, limit: int = 100) -> list[dict]:
         "invoice_number": (p.get("Invoice") or {}).get("InvoiceNumber"),
         "contact": ((p.get("Invoice") or {}).get("Contact") or {}).get("Name"),
         "account": (p.get("Account") or {}).get("Name") or (p.get("Account") or {}).get("Code"),
-    } for p in data.get("Payments", [])[:limit]]
+    } for p in rows]
 
 
 def flatten_report(data: dict) -> dict:
@@ -238,18 +265,27 @@ async def balance_sheet(x: Xero, as_at: str) -> dict:
 
 # ---------------------------------------------------------------- attachments
 
+async def _invoice_guid(x: Xero, id_or_number: str) -> str:
+    """The InvoiceID for an id or an invoice number, so only real ids go into URLs."""
+    if _GUID.match((id_or_number or "").strip()):
+        return id_or_number.strip()
+    return (await _fetch_invoice(x, id_or_number))["InvoiceID"]
+
+
 async def list_attachments(x: Xero, invoice_id: str) -> list[dict]:
+    invoice_id = await _invoice_guid(x, invoice_id)
     data = await x.get(f"/Invoices/{invoice_id}/Attachments")
     return [{"attachment_id": a.get("AttachmentID"), "file_name": a.get("FileName"),
              "mime_type": a.get("MimeType"), "size": a.get("ContentLength")} for a in data.get("Attachments", [])]
 
 
 async def download_attachment(x: Xero, cfg: Config, invoice_id: str, attachment_id: str, local_folder: str) -> str:
+    invoice_id = await _invoice_guid(x, invoice_id)
     atts = await list_attachments(x, invoice_id)
     match = next((a for a in atts if a["attachment_id"] == attachment_id or a["file_name"] == attachment_id), None)
     if not match:
         raise XeroError(404, "No such attachment on that invoice. Use list_attachments to see them.")
-    data = (await x.request("GET", f"/Invoices/{invoice_id}/Attachments/{match['attachment_id']}",
+    data = (await x.request("GET", f"/Invoices/{invoice_id}/Attachments/{_guid(match['attachment_id'], 'attachment id')}",
                             headers={"Accept": match["mime_type"] or "application/octet-stream"})).content
     return str(localfs.write_file(local_folder, match["file_name"], data, cfg.local_roots()))
 
@@ -258,6 +294,7 @@ async def attach_file(
     x: Xero, cfg: Config, invoice_id: str, local_path: str, file_name: str | None = None,
     delete_after: bool = False,
 ) -> dict:
+    invoice_id = await _invoice_guid(x, invoice_id)
     name, data = localfs.read_file(local_path, cfg.local_roots())
     name = localfs.safe_filename(file_name or name)
     mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
@@ -271,8 +308,8 @@ async def attach_file(
         # Only remove the local copy once Xero has confirmed it holds the file.
         if not att.get("AttachmentID"):
             raise ValueError("Xero didn't confirm the attachment, so the local file was kept.")
-        localfs.delete_file(local_path, cfg.local_roots())
-        out["local_file_deleted"] = True
+        localfs.trash_file(local_path, cfg.local_roots())
+        out["local_file_moved_to_bin"] = True
     return out
 
 
@@ -280,14 +317,31 @@ async def attach_file(
 
 async def _contact_ref(x: Xero, contact_id: str | None, contact_name: str | None) -> dict:
     if contact_id:
-        return {"ContactID": contact_id}
+        return {"ContactID": _guid(contact_id, "contact_id")}
     if not contact_name:
         raise ValueError("Give contact_id or contact_name.")
     data = await x.get("/Contacts", params={"where": f'Name=="{_q(contact_name)}"', "summaryOnly": "true"})
     found = data.get("Contacts", [])
     if not found:
         raise ValueError(f"No Xero contact is named exactly '{contact_name}'. Use search_contacts, or create_contact.")
+    if len(found) > 1:
+        ids = ", ".join(f"{c.get('ContactID')} ({c.get('ContactStatus')})" for c in found[:5])
+        raise ValueError(f"More than one Xero contact is named '{contact_name}': {ids}. Use the contact_id.")
     return {"ContactID": found[0]["ContactID"]}
+
+
+# An Australian BSB (6 digits, often written 123-456) then a 5-10 digit account number.
+_BSB_ACCOUNT = re.compile(r"\s*(\d{3})[-\s]?(\d{3})[-\s]+(\d[\d\s-]{3,12}\d)\s*|\s*(\d{6})(\d{5,10})\s*")
+
+
+def _split_bsb(raw: str) -> tuple[str | None, str | None]:
+    """(bsb, account) only when `raw` is clearly a BSB followed by an account number."""
+    m = _BSB_ACCOUNT.fullmatch(raw or "")
+    if not m:
+        return None, None
+    if m.group(1):
+        return m.group(1) + m.group(2), re.sub(r"\D", "", m.group(3))
+    return m.group(4), m.group(5)
 
 
 async def contact_bank_details(x: Xero, contact_id: str | None = None, contact_name: str | None = None) -> dict:
@@ -302,9 +356,7 @@ async def contact_bank_details(x: Xero, contact_id: str | None = None, contact_n
     c = found[0]
     batch = c.get("BatchPayments") or {}
     raw = c.get("BankAccountDetails") or batch.get("BankAccountNumber") or ""
-    digits = re.sub(r"\D", "", raw)
-    # Australian accounts are stored as the 6-digit BSB and account number run together.
-    bsb, account = (digits[:6], digits[6:]) if len(digits) > 6 else (None, digits or None)
+    bsb, account = _split_bsb(raw)
     return {
         "contact_id": c.get("ContactID"),
         "name": c.get("Name"),
@@ -313,6 +365,8 @@ async def contact_bank_details(x: Xero, contact_id: str | None = None, contact_n
         "bank_account_details": c.get("BankAccountDetails") or None,
         "bsb": bsb,
         "account_number": account,
+        **({} if bsb or not raw.strip() else
+           {"note": "The BSB and account number couldn't be told apart reliably; compare against the raw details."}),
         "batch_payments": {
             "bank_account_name": batch.get("BankAccountName") or None,
             "bank_account_number": batch.get("BankAccountNumber") or None,
@@ -347,6 +401,7 @@ async def update_contact(
     x: Xero, contact_id: str, email: str | None = None, phone: str | None = None,
     account_number: str | None = None, tax_number: str | None = None, name: str | None = None,
 ) -> dict:
+    contact_id = _guid(contact_id, "contact_id")
     body: dict = {"ContactID": contact_id}
     if name:
         body["Name"] = name
@@ -425,28 +480,50 @@ async def create_draft_bill(
     return invoice_detail(data["Invoices"][0])
 
 
+# Fields kept from a line that isn't being changed (Xero replaces the whole line with what's sent).
+_KEEP_FIELDS = ("LineItemID", "Description", "Quantity", "UnitAmount", "AccountCode", "TaxType", "Tracking",
+                "ItemCode", "DiscountRate", "DiscountAmount", "TaxAmount")
+# Changing any of these makes a manually adjusted TaxAmount (e.g. a 1c GST fix) wrong, so it's recalculated.
+_AMOUNT_FIELDS = {"Quantity", "UnitAmount", "LineAmount", "TaxType", "DiscountRate", "DiscountAmount"}
+
+
+def _merge_line(current: dict, change: dict) -> dict:
+    """The line to send: everything the line already has, with `change` applied on top."""
+    line = {k: current[k] for k in _KEEP_FIELDS if current.get(k) is not None}
+    if "DiscountRate" in line and "DiscountAmount" in line:
+        del line["DiscountAmount"]  # Xero takes one or the other
+    if _AMOUNT_FIELDS & set(change):
+        line.pop("TaxAmount", None)
+    line.update(change)
+    return line
+
+
 async def update_bill_lines(
     x: Xero, invoice_id: str, changes: list[dict] | None = None, replace_all_lines: list[dict] | None = None,
 ) -> dict:
     """Recode or edit lines on a draft bill. `changes` edits existing lines by line_item_id;
     `replace_all_lines` swaps in a whole new set of lines (e.g. to split one line into several)."""
     current = await _fetch_invoice(x, invoice_id)
+    if current.get("Type") != "ACCPAY":
+        raise ValueError(f"{invoice_id} is a sales invoice, not a bill. Only bills can be edited here.")
     if current.get("Status") not in EDITABLE_STATUSES:
         raise ValueError(f"Only draft bills can be edited here; this one is {current.get('Status')}.")
     before = current.get("Total")
     if replace_all_lines:
         new_lines = [_line_payload(li) for li in replace_all_lines]
     elif changes:
+        ids = [c.get("line_item_id") for c in changes]
+        if None in ids or "" in ids:
+            raise ValueError("Each change needs the line_item_id of the line it edits (see get_invoice).")
+        if len(set(ids)) != len(ids):
+            raise ValueError("The same line_item_id appears more than once in changes; combine them into one change.")
         by_id = {c["line_item_id"]: c for c in changes}
         unknown = set(by_id) - {li["LineItemID"] for li in current.get("LineItems", [])}
         if unknown:
             raise ValueError(f"These line_item_ids aren't on the bill: {', '.join(unknown)}")
         new_lines = []
         for li in current.get("LineItems", []):
-            keep = {k: li[k] for k in ("LineItemID", "Description", "Quantity", "UnitAmount", "AccountCode",
-                                       "TaxType", "Tracking") if li.get(k) is not None}
-            keep.update(_line_payload(by_id.get(li["LineItemID"], {})))
-            new_lines.append(keep)
+            new_lines.append(_merge_line(li, _line_payload(by_id.get(li["LineItemID"], {}))))
     else:
         raise ValueError("Give changes or replace_all_lines.")
     data = await x.post(f"/Invoices/{current['InvoiceID']}",
@@ -474,8 +551,9 @@ async def bills_for_approval(x: Xero, invoice_ids: list[str]) -> list[dict]:
 
 
 async def approve_bills(x: Xero, invoice_ids: list[str]) -> list[dict]:
+    """Approve bills by their InvoiceIDs: pass the ids bills_for_approval returned, never raw input."""
     results = []
-    for iid in invoice_ids:
+    for iid in [_guid(i, "invoice_id") for i in invoice_ids]:
         try:
             data = await x.post(f"/Invoices/{iid}", json={"Invoices": [{"InvoiceID": iid, "Status": "AUTHORISED"}]})
             inv = data["Invoices"][0]

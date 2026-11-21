@@ -10,27 +10,33 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import http.server
 import json
+import logging
+import os
 import secrets
 import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 import keyring
 from keyring.errors import KeyringError
 
-from .config import SCOPES, Config
+from .api import XeroError
+from .config import SCOPES, Config, config_dir
 
 AUTHORIZE_URL = "https://login.xero.com/identity/connect/authorize"
 TOKEN_URL = "https://identity.xero.com/connect/token"
 CONNECTIONS_URL = "https://api.xero.com/connections"
 KEYRING_SERVICE = "xero-mcp"
 REFRESH_EARLY_SECONDS = 120
+log = logging.getLogger("xero_mcp")
 
 
 class NotSignedIn(Exception):
@@ -173,29 +179,100 @@ class TokenProvider:
         self._access_token: str | None = None
         self._expires_at = 0.0
         self._lock = asyncio.Lock()
+        self._unsaved_refresh: str | None = None
 
     async def __call__(self) -> str:
         async with self._lock:
             if self._access_token and time.time() < self._expires_at - REFRESH_EARLY_SECONDS:
                 return self._access_token
-            refresh = load_refresh_token(self._cfg)
-            if not refresh or not self._cfg.client_id:
-                raise NotSignedIn("Not signed in to Xero. Run `xero-mcp login` in a terminal, then try again.")
-            client = self._client or httpx.AsyncClient(timeout=30)
-            try:
-                resp = await client.post(TOKEN_URL, data={
-                    "grant_type": "refresh_token", "client_id": self._cfg.client_id, "refresh_token": refresh,
-                })
-            finally:
-                if self._client is None:
-                    await client.aclose()
-            if resp.status_code >= 400:
+            # Claude Desktop and Claude Code each run their own copy of this server, sharing one
+            # saved sign-in. Xero refresh tokens are single-use, so only one copy may refresh at a
+            # time, and each re-reads the saved token after getting the lock.
+            async with _refresh_lock(config_dir() / "refresh.lock"):
+                return await self._refresh()
+
+    async def _refresh(self) -> str:
+        refresh = self._unsaved_refresh or load_refresh_token(self._cfg)
+        if not refresh or not self._cfg.client_id:
+            raise NotSignedIn("Not signed in to Xero. Run `xero-mcp login` in a terminal, then try again.")
+        client = self._client or httpx.AsyncClient(timeout=30)
+        try:
+            resp = await client.post(TOKEN_URL, data={
+                "grant_type": "refresh_token", "client_id": self._cfg.client_id, "refresh_token": refresh,
+            })
+        except httpx.HTTPError as exc:
+            raise XeroError(503, f"Couldn't reach Xero's sign-in service ({type(exc).__name__}). "
+                                 "Check the internet connection and try again.") from None
+        finally:
+            if self._client is None:
+                await client.aclose()
+        if resp.status_code >= 400:
+            if _token_error(resp) in ("invalid_grant", "unauthorized_client", "invalid_client"):
+                self._unsaved_refresh = None
                 raise NotSignedIn(
                     "Your Xero sign-in has expired (Xero signs you out after 60 days without use). "
                     "Run `xero-mcp login` in a terminal, then try again."
                 )
-            token = resp.json()
+            raise XeroError(resp.status_code, "Xero's sign-in service had a problem. Try again in a few minutes; "
+                                              "you don't need to sign in again.")
+        token = resp.json()
+        try:
             save_refresh_token(self._cfg, token["refresh_token"])
-            self._access_token = token["access_token"]
-            self._expires_at = time.time() + int(token.get("expires_in", 1800))
-            return self._access_token
+            self._unsaved_refresh = None
+        except KeyringError:
+            # The old token is used up, so keep the new one in memory and try saving it next time.
+            self._unsaved_refresh = token["refresh_token"]
+            log.warning("Couldn't save the new Xero sign-in to the keychain (is it locked?); will retry.")
+        self._access_token = token["access_token"]
+        self._expires_at = time.time() + int(token.get("expires_in", 1800))
+        return self._access_token
+
+
+def _token_error(resp: httpx.Response) -> str:
+    try:
+        return str(resp.json().get("error", ""))
+    except ValueError:
+        return ""
+
+
+@contextlib.asynccontextmanager
+async def _refresh_lock(path: Path, timeout: float = 60.0):
+    """An exclusive lock on `path` shared by every process on this computer."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "a+b")
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                _lock_file(f)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise XeroError(503, "Another copy of xero-mcp is busy signing in to Xero. Try again shortly.") from None
+                await asyncio.sleep(0.1)
+        try:
+            yield
+        finally:
+            _unlock_file(f)
+    finally:
+        f.close()
+
+
+if os.name == "nt":
+    import msvcrt
+
+    def _lock_file(f) -> None:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+
+    def _unlock_file(f) -> None:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock_file(f) -> None:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock_file(f) -> None:
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)

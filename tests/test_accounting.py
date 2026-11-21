@@ -4,7 +4,9 @@ from datetime import date, timedelta
 import httpx
 import pytest
 
-from xero_mcp import accounting as acc
+import os
+
+from xero_mcp import accounting as acc, localfs
 from xero_mcp.api import XeroError, clean_dates
 from tests.conftest import BILL_ID, bill
 
@@ -145,13 +147,15 @@ async def test_attach_file(mock, xero, cfg, tmp_path):
     assert out["attachment_id"] == "A1"
 
 
-async def test_attach_file_delete_after(mock, xero, cfg, tmp_path):
+async def test_attach_file_delete_after(mock, xero, cfg, tmp_path, monkeypatch):
+    # Moved to the Bin (faked here), not permanently deleted.
+    monkeypatch.setattr(localfs, "send2trash", lambda p: os.remove(p))
     pdf = tmp_path / "Invoice 2.pdf"
     pdf.write_bytes(b"%PDF")
     mock.put(f"/Invoices/{BILL_ID}/Attachments/Invoice%202.pdf").respond(
         json={"Attachments": [{"FileName": "Invoice 2.pdf", "AttachmentID": "A2"}]})
     out = await acc.attach_file(xero, cfg, BILL_ID, str(pdf), delete_after=True)
-    assert out["local_file_deleted"] is True and not pdf.exists()
+    assert out["local_file_moved_to_bin"] is True and not pdf.exists()
 
 
 async def test_attach_file_keeps_file_without_confirmation(mock, xero, cfg, tmp_path):

@@ -69,7 +69,18 @@ class Config:
         return f"http://localhost:{self.port}/callback"
 
     def local_roots(self) -> list[Path]:
-        return [Path(p).expanduser().resolve() for p in self.local_dirs if p]
+        # Only absolute folders, never the whole disk: a relative entry like "." would depend on
+        # wherever the app happened to start the server.
+        roots = []
+        for p in self.local_dirs:
+            path = Path(p).expanduser() if p else None
+            if path is None or not path.is_absolute():
+                continue
+            resolved = path.resolve()
+            if resolved.parent == resolved:  # a filesystem root such as / or C:\\
+                continue
+            roots.append(resolved)
+        return roots
 
 
 def load() -> Config:
