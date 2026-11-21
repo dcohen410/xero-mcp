@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
@@ -51,6 +53,20 @@ def clean_dates(value: Any) -> Any:
     return value
 
 
+def _retry_after(resp: httpx.Response, attempt: int) -> float:
+    """Seconds to wait from Retry-After, which may be a number or an HTTP date."""
+    value = resp.headers.get("Retry-After")
+    if value:
+        try:
+            return float(value)
+        except ValueError:
+            try:
+                return max(0.0, email.utils.parsedate_to_datetime(value).timestamp() - time.time())
+            except (TypeError, ValueError):
+                pass
+    return float(2 ** attempt)
+
+
 class Xero:
     def __init__(self, token: Callable[[], Awaitable[str]], tenant_id: str, client: httpx.AsyncClient | None = None):
         self._token = token
@@ -76,7 +92,7 @@ class Xero:
             resp = await self._client.request(method, BASE + path, params=params, json=json, content=content,
                                               headers=hdrs)
             if resp.status_code in (429, 503) and attempt < MAX_ATTEMPTS:
-                wait = float(resp.headers.get("Retry-After", 2 ** attempt))
+                wait = _retry_after(resp, attempt)
                 if wait > 30:
                     break  # daily limit or long back-off: report it rather than hang
                 await asyncio.sleep(wait)

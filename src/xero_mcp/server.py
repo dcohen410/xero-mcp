@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Awaitable
 
+import httpx
+from keyring.errors import KeyringError
+
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
@@ -21,7 +24,8 @@ Tools for the signed-in person's Xero organisation.
 - Bills are invoices of type ACCPAY. Create them as drafts. Approving is off unless the user turned it on.
 - Before coding a bill, look up real account codes with list_accounts and tax types with
   list_tax_rates. Never invent codes.
-- Nothing here deletes, voids or records payments.
+- Nothing here deletes, voids or records payments in Xero. attach_file's delete_after moves the
+  local file to the Bin, where it can be restored.
 - Amounts on bills are GST-inclusive by default (amounts_are="Inclusive").
 - Dates are YYYY-MM-DD.
 """
@@ -47,6 +51,10 @@ async def guard(coro: Awaitable[Any]) -> Any:
         return await coro
     except (NotSignedIn, XeroError, ValueError, localfs.LocalPathError) as exc:
         raise ToolError(str(exc)) from None
+    except httpx.HTTPError as exc:
+        raise ToolError(f"Couldn't reach Xero ({type(exc).__name__}). Check the internet connection and try again.") from None
+    except KeyringError as exc:
+        raise ToolError(f"Couldn't read the saved Xero sign-in from the keychain: {exc}") from None
 
 
 # ================================================================ reading
@@ -226,8 +234,9 @@ async def attach_file(
     invoice_id: str, local_path: str, file_name: str | None = None, delete_after: bool = False,
 ) -> dict:
     """Attach a file from this computer (inside an allowed folder) to a bill or invoice. Set
-    `delete_after` to remove the local file once Xero confirms the attachment (use it for files
-    downloaded only so they could be attached)."""
+    `delete_after` to move the local file to the Bin once Xero confirms the attachment (use it only for
+    files downloaded so they could be attached, and only when the user asked for that). `invoice_id`
+    can be an invoice_id or an invoice number."""
     return await guard(acc.attach_file(xero(), cfg, invoice_id, local_path, file_name, delete_after))
 
 
@@ -295,7 +304,8 @@ async def approve_bills(invoice_ids: list[str], ctx: Context, user_confirmed: bo
             "next_step": "Show this summary to the user and ask whether to approve. Only if they clearly say yes, "
                          "call approve_bills again with the same invoice_ids and user_confirmed=true.",
         }
-    return {"results": await guard(acc.approve_bills(xero(), invoice_ids))}
+    # Approve exactly the bills that were checked and shown, by their own ids.
+    return {"results": await guard(acc.approve_bills(xero(), [b["invoice_id"] for b in bills]))}
 
 
 # Only offered to Claude when the user has turned approving on (`xero-mcp configure --approve-mode confirm`).
