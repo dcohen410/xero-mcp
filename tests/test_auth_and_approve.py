@@ -70,7 +70,7 @@ async def test_approve_asks_in_conversation_without_prompt_support(mock):
     approve = mock.post(f"/Invoices/{BILL_ID}").respond(json={"Invoices": [{**CODED, "Status": "AUTHORISED"}]})
     out = await server.approve_bills([BILL_ID], FakeCtx())
     assert out["needs_confirmation"] and "Supplier Pty Ltd" in out["summary"] and not approve.called
-    out = await server.approve_bills([BILL_ID], FakeCtx(), user_confirmed=True)
+    out = await server.approve_bills([BILL_ID], FakeCtx(), confirmation_code=out["confirmation_code"])
     assert out["results"][0]["approved"] is True
 
 
@@ -78,7 +78,7 @@ async def test_declined_prompt_overrides_model_flag(mock):
     mock.get(f"/Invoices/{BILL_ID}").respond(json={"Invoices": [CODED]})
     approve = mock.post(f"/Invoices/{BILL_ID}").respond(json={"Invoices": [CODED]})
     out = await server.approve_bills([BILL_ID], FakeCtx(FORM, SimpleNamespace(action="decline", data=None)),
-                                     user_confirmed=True)
+                                     confirmation_code="ABCDEF")
     assert out["approved"] is False and not approve.called
 
 
@@ -94,4 +94,22 @@ async def test_accepted_prompt_approves(mock):
 async def test_approving_can_be_disabled(monkeypatch):
     monkeypatch.setattr(server.cfg, "approve_mode", "disabled")
     with pytest.raises(Exception, match="turned off"):
-        await server.approve_bills([BILL_ID], FakeCtx(), user_confirmed=True)
+        await server.approve_bills([BILL_ID], FakeCtx(), confirmation_code="ABCDEF")
+
+
+async def test_approving_needs_a_code_from_a_summary(mock):
+    mock.get(f"/Invoices/{BILL_ID}").respond(json={"Invoices": [CODED]})
+    approve = mock.post(f"/Invoices/{BILL_ID}").respond(json={"Invoices": [{**CODED, "Status": "AUTHORISED"}]})
+    with pytest.raises(Exception, match="isn't valid"):
+        await server.approve_bills([BILL_ID], FakeCtx(), confirmation_code="MADEUP")
+    assert not approve.called
+
+
+async def test_approve_code_fails_if_the_total_changed(mock):
+    route = mock.get(f"/Invoices/{BILL_ID}").respond(json={"Invoices": [CODED]})
+    approve = mock.post(f"/Invoices/{BILL_ID}").respond(json={"Invoices": [{**CODED, "Status": "AUTHORISED"}]})
+    code = (await server.approve_bills([BILL_ID], FakeCtx()))["confirmation_code"]
+    route.respond(json={"Invoices": [{**CODED, "Total": 999.0}]})
+    with pytest.raises(Exception, match="changed since the summary"):
+        await server.approve_bills([BILL_ID], FakeCtx(), confirmation_code=code)
+    assert not approve.called

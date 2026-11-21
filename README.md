@@ -25,7 +25,8 @@ and no third-party service in the middle. Your sign-in is kept in your operating
 - Delete or void anything, or record payments.
 - Change bank details on contacts.
 - Approve bills, unless you turn that on (`--approve-mode confirm`). Even then, you confirm every
-  approval.
+  approval. If your app can't show a confirmation prompt, Claude gets a one-time code with the summary,
+  and nothing is approved until it comes back with that code for exactly those bills, unchanged.
 
 ## Setup
 
